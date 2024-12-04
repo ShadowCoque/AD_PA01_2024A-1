@@ -1,191 +1,88 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Text;
-using System.Text.RegularExpressions;
-using System.Threading;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
+using System.Threading;
 using Protocolo;
 
 namespace Servidor
 {
     class Servidor
     {
-        private static TcpListener escuchador;
-        private static Dictionary<string, int> listadoClientes
-            = new Dictionary<string, int>();
+        private static TcpListener escuchador; // Listener para aceptar conexiones
+        private static Protocolo.Protocolo protocolo = new Protocolo.Protocolo(); // Instancia del Protocolo
+        private static Dictionary<string, int> listadoClientes = new Dictionary<string, int>(); // Almacena las solicitudes por cliente
 
         static void Main(string[] args)
         {
             try
             {
+                // Configura el servidor para escuchar en el puerto 8080
                 escuchador = new TcpListener(IPAddress.Any, 8080);
                 escuchador.Start();
-                Console.WriteLine("Servidor inició en el puerto 5000...");
+                Console.WriteLine("Servidor iniciado en el puerto 8080...");
 
                 while (true)
                 {
+                    // Acepta una conexión entrante
                     TcpClient cliente = escuchador.AcceptTcpClient();
-                    Console.WriteLine("Cliente conectado, puerto: {0}", cliente.Client.RemoteEndPoint.ToString());
+                    Console.WriteLine($"Cliente conectado desde: {cliente.Client.RemoteEndPoint}");
+                    // Crea un hilo para manejar al cliente
                     Thread hiloCliente = new Thread(ManipuladorCliente);
                     hiloCliente.Start(cliente);
                 }
             }
             catch (SocketException ex)
             {
-                Console.WriteLine("Error de socket al iniciar el servidor: " +
-                    ex.Message);
+                Console.WriteLine($"Error de socket: {ex.Message}");
             }
-            finally 
+            finally
             {
-                escuchador?.Stop();
+                escuchador?.Stop(); // Detiene el listener en caso de error
             }
         }
 
         private static void ManipuladorCliente(object obj)
         {
-            TcpClient cliente = (TcpClient)obj;
-            NetworkStream flujo = null;
+            TcpClient cliente = (TcpClient)obj; // Convierte el objeto en TcpClient
+            NetworkStream flujo = null; // Flujo para comunicación con el cliente
+
             try
             {
-                flujo = cliente.GetStream();
-                byte[] bufferTx;
-                byte[] bufferRx = new byte[1024];
+                flujo = cliente.GetStream(); // Obtiene el flujo del cliente
+                byte[] bufferRx = new byte[1024]; // Buffer para recibir datos
                 int bytesRx;
 
                 while ((bytesRx = flujo.Read(bufferRx, 0, bufferRx.Length)) > 0)
                 {
-                    string mensajeRx =
-                        Encoding.UTF8.GetString(bufferRx, 0, bytesRx);
+                    // Convierte los bytes recibidos a texto
+                    string mensajeRx = Encoding.UTF8.GetString(bufferRx, 0, bytesRx);
+                    Console.WriteLine($"Mensaje recibido: {mensajeRx}");
+
+                    // Procesa el mensaje como un Pedido
                     Pedido pedido = Pedido.Procesar(mensajeRx);
-                    Console.WriteLine("Se recibio: " + pedido);
+                    string direccionCliente = cliente.Client.RemoteEndPoint.ToString();
 
-                    string direccionCliente =
-                        cliente.Client.RemoteEndPoint.ToString();
-                    Respuesta respuesta = ResolverPedido(pedido, direccionCliente);
-                    Console.WriteLine("Se envió: " + respuesta);
+                    // Resuelve el pedido utilizando el protocolo
+                    Respuesta respuesta = protocolo.ResolverPedido(pedido, direccionCliente, listadoClientes);
+                    Console.WriteLine($"Respuesta enviada: {respuesta}");
 
-                    bufferTx = Encoding.UTF8.GetBytes(respuesta.ToString());
+                    // Envía la respuesta al cliente
+                    byte[] bufferTx = Encoding.UTF8.GetBytes(respuesta.ToString());
                     flujo.Write(bufferTx, 0, bufferTx.Length);
                 }
-
             }
-            catch (SocketException ex)
+            catch (Exception ex)
             {
-                Console.WriteLine("Error de socket al manejar el cliente: " + ex.Message);
+                Console.WriteLine($"Error al manejar cliente: {ex.Message}");
             }
             finally
             {
-                flujo?.Close();
-                cliente?.Close();
+                flujo?.Close(); // Cierra el flujo
+                cliente?.Close(); // Cierra la conexión del cliente
             }
         }
-
-        private static Respuesta ResolverPedido(Pedido pedido, string direccionCliente)
-        {
-            Respuesta respuesta = new Respuesta
-            { Estado = "NOK", Mensaje = "Comando no reconocido" };
-
-            switch (pedido.Comando)
-            {
-                case "INGRESO":
-                    if (pedido.Parametros.Length == 2 &&
-                        pedido.Parametros[0] == "root" &&
-                        pedido.Parametros[1] == "admin20")
-                    {
-                        respuesta = new Random().Next(2) == 0
-                            ? new Respuesta 
-                            { Estado = "OK", 
-                                Mensaje = "ACCESO_CONCEDIDO" }
-                            : new Respuesta 
-                            { Estado = "NOK", 
-                                Mensaje = "ACCESO_NEGADO" };
-                    }
-                    else
-                    {
-                        respuesta.Mensaje = "ACCESO_NEGADO";
-                    }
-                    break;
-
-                case "CALCULO":
-                    if (pedido.Parametros.Length == 3)
-                    {
-                        string modelo = pedido.Parametros[0];
-                        string marca = pedido.Parametros[1];
-                        string placa = pedido.Parametros[2];
-                        if (ValidarPlaca(placa))
-                        {
-                            byte indicadorDia = ObtenerIndicadorDia(placa);
-                            respuesta = new Respuesta
-                            { Estado = "OK", 
-                                Mensaje = $"{placa} {indicadorDia}" };
-                            ContadorCliente(direccionCliente);
-                        }
-                        else
-                        {
-                            respuesta.Mensaje = "Placa no válida";
-                        }
-                    }
-                    break;
-
-                case "CONTADOR":
-                    if (listadoClientes.ContainsKey(direccionCliente))
-                    {
-                        respuesta = new Respuesta
-                        { Estado = "OK",
-                            Mensaje = listadoClientes[direccionCliente].ToString() };
-                    }
-                    else
-                    {
-                        respuesta.Mensaje = "No hay solicitudes previas";
-                    }
-                    break;
-            }
-
-            return respuesta;
-        }
-
-        private static bool ValidarPlaca(string placa)
-        {
-            return Regex.IsMatch(placa, @"^[A-Z]{3}[0-9]{4}$");
-        }
-
-        private static byte ObtenerIndicadorDia(string placa)
-        {
-            int ultimoDigito = int.Parse(placa.Substring(6, 1));
-            switch (ultimoDigito)
-            {
-                case 1: 
-                case 2: 
-                    return 0b00100000; // Lunes
-                case 3: 
-                case 4: 
-                    return 0b00010000; // Martes
-                case 5: 
-                case 6: 
-                    return 0b00001000; // Miércoles
-                case 7: 
-                case 8: 
-                    return 0b00000100; // Jueves
-                case 9: 
-                case 0: 
-                    return 0b00000010; // Viernes
-                default: 
-                    return 0;
-            }
-        }
-
-        private static void ContadorCliente(string direccionCliente)
-        {
-            if (listadoClientes.ContainsKey(direccionCliente))
-            {
-                listadoClientes[direccionCliente]++;
-            }
-            else
-            {
-                listadoClientes[direccionCliente] = 1;
-            }
-        }
-
     }
 }
+
